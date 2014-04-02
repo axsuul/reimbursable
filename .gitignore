@@ -1,0 +1,4 @@
+*.db
+*.xls
+*.db-journal
+.DS_Store
