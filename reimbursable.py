@@ -32,6 +32,26 @@ class Reimbursable(Model):
 class Category(Model):
     name = CharField(index=True)
 
+    def description(self):
+        description = self.name;
+
+        if self.percent() < 1:
+            description += " (" + str(self.percentage()) + "%)"
+
+        return description
+
+    def percentage(self):
+        return int(self.percent()*100)
+
+    def percent(self):
+        if re.match(r'Gas|Auto|Fuel', self.name):
+            return 0.5
+
+        if re.match(r'Food|Restaurants|Dining', self.name):
+            return 0.5
+
+        return 1
+
     class Meta:
         database = db
 
@@ -49,31 +69,73 @@ class Transaction(Model):
     amount = FloatField()
     row = IntegerField()
 
+    def calculate_amount(self):
+        return self.category.percent()*self.amount
+
     class Meta:
         database = db
-        # indexes = [(('date', 'row'), False)]
 
-# Setup sqlite db if not found
-if not os.path.isfile(sqlite_path):
-    # Create tables
-    Reimbursable.create_table()
-    Category.create_table()
-    Account.create_table()
-    Transaction.create_table()
+# Fresh db
+try:
+    os.remove(sqlite_path)
+
+except OSError:
+    pass
+
+# Create tables
+Reimbursable.create_table()
+Category.create_table()
+Account.create_table()
+Transaction.create_table()
+
+# Output helper
+def output_transactions(sheet,  label, transactions, column):
+    totals = {}
+
+    for transaction in transactions:
+        category = transaction.category
+
+        if category.name not in totals:
+            totals[category.name] = { 'amount': 0.00, 'category': category }
+
+        totals[category.name]['amount'] += transaction.calculate_amount()
+
+    row = 2
+    grand_total = 0
+
+    for category_name, data in iter(sorted(totals.iteritems())):
+        total = data['amount']
+        category = data['category']
+
+        # Skip categories with 0
+        if total == 0:
+            continue
+
+        category_cell = Cell(output_sheet, row, column)
+        total_cell = Cell(output_sheet, row, column + 1)
+
+        category_cell.value = category.description()
+        total_cell.value = locale.currency(total)
+
+        grand_total += total
+        row += 1
+
+    Cell(output_sheet, 1, column).value = label
+    Cell(output_sheet, 1, column + 1).value = locale.currency(grand_total)
 
 with db.transaction():
     for input_sheet in all_sheets():
-        # Skip header
-        input_row = 2
-
         account_name = input_sheet
         account = Account.get_or_create(name=account_name)
 
-        while True:
+        for input_row in list(set(all_cells(input_sheet).row)):
+            # Skip header
+            if input_row < 2:
+                continue
+
             amount_cell = Cell(input_sheet, "{0}{1}".format(input_amount_column, input_row))
             category_cell = Cell(input_sheet, "{0}{1}".format(input_category_column, input_row))
             type_cell = Cell(input_sheet, "{0}{1}".format(input_type_column, input_row))
-            label_cell = Cell(input_sheet, "{0}{1}".format(input_label_column, input_row))
             reimbursable_cell = Cell(input_sheet, "{0}{1}".format(input_reimbursable_column, input_row))
 
             # Stop when meet empty rows
@@ -82,8 +144,8 @@ with db.transaction():
 
             amount = float(amount_cell.value)
             category_name = category_cell.value
-            reimbursable_name = reimbursable_cell.value
             type = type_cell.value
+            reimbursable_name = reimbursable_cell.value
             reimbursable = None
 
             # Make amount negative if credit
@@ -110,9 +172,6 @@ with db.transaction():
 
             print "Imported transaction #" + str(transaction.id)
 
-            # Next row
-            input_row += 1
-
 # Remove old output
 try:
     os.remove(output_path)
@@ -127,40 +186,22 @@ for reimbursable in Reimbursable.select():
     output_sheet = reimbursable.name
     new_sheet(output_sheet)
 
-    totals = {}
+    column = 1
 
-    for transaction in reimbursable.transactions:
-        category = transaction.category
+    for account in Account.select():
+        transactions = account.transactions.select().where(Transaction.reimbursable == reimbursable)
 
-        if category.name not in totals:
-            totals[category.name] = 0.00
+        output_transactions(output_sheet, account.name, transactions, column)
 
-        totals[category.name] += transaction.amount
+        column += 2
 
-    row = 2
-    grand_total = 0
+    output_transactions(output_sheet, "Total " + reimbursable.name, reimbursable.transactions, column)
 
-    for category_name, total in iter(sorted(totals.iteritems())):
-        # Skip categories with 0
-        if total == 0:
-            continue
-
-        category_cell = Cell(output_sheet, row, 1)
-        total_cell = Cell(output_sheet, row, 2)
-
-        category_cell.value = category_name
-        total_cell.value = locale.currency(total)
-
-        grand_total += total
-        row += 1
-
-    grand_total_label_cell = Cell(output_sheet, 1, 1)
-    grand_total_label_cell.value = "Total"
-    grand_total_label_cell.font.bold = True
-
-    grand_total_cell = Cell(output_sheet, 1, 2)
-    grand_total_cell.value = locale.currency(grand_total)
-    grand_total_cell.font.bold = True
+    # Format everythang
+    header_range = CellRange(output_sheet, "A1:Z1")
+    header_range.color = "black"
+    header_range.font.color = "white"
+    header_range.font.bold = True
 
     # Autofit sheet cells
     autofit(output_sheet)
