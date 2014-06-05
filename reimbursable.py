@@ -88,6 +88,10 @@ Category.create_table()
 Account.create_table()
 Transaction.create_table()
 
+# Create a nonreimbursable for aynthing that
+# can't be reimbursed
+nonreimbursable = Reimbursable.create(name="Non-expensable")
+
 # Output helper
 def output_transactions(sheet,  label, transactions, column):
     totals = {}
@@ -161,6 +165,9 @@ with db.transaction():
                 # If this transaction is reimbursable
                 if reimbursable_name:
                     reimbursable = Reimbursable.get_or_create(name=reimbursable_name.title())
+                # Only consider debits for non-reimbursable
+                elif type == "debit":
+                    reimbursable = nonreimbursable
 
                 category = Category.get_or_create(name=category_name)
                 transaction = Transaction.create(reimbursable=reimbursable, category=category, account=account, amount=amount, row=input_row)
