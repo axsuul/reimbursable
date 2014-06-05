@@ -25,6 +25,7 @@ db = SqliteDatabase(sqlite_path)
 # Models
 class Reimbursable(Model):
     name = CharField(index=True)
+    weight = IntegerField(default=0)
 
     class Meta:
         database = db
@@ -90,7 +91,7 @@ Transaction.create_table()
 
 # Create a nonreimbursable for aynthing that
 # can't be reimbursed
-nonreimbursable = Reimbursable.create(name="Non-expensable")
+nonreimbursable = Reimbursable.create(name="Non-expensable", weight=100)
 
 # Output helper
 def output_transactions(sheet,  label, transactions, column):
@@ -117,15 +118,57 @@ def output_transactions(sheet,  label, transactions, column):
 
         category_cell = Cell(output_sheet, row, column)
         total_cell = Cell(output_sheet, row, column + 1)
+        reimbursable_cell = Cell(output_sheet, row, column + 2)
 
         category_cell.value = category.description()
         total_cell.value = locale.currency(total)
+        reimbursable_cell.value = reimbursable.name
 
         grand_total += total
         row += 1
 
     Cell(output_sheet, 1, column).value = label
     Cell(output_sheet, 1, column + 1).value = locale.currency(grand_total)
+
+def account_transactions(sheet, transactions, reimbursable, row, column):
+    totals = {}
+    grand_total = 0
+
+    for transaction in transactions:
+        category = transaction.category
+
+        if category.name not in totals:
+            totals[category.name] = { 'amount': 0.00, 'category': category }
+
+        totals[category.name]['amount'] += transaction.calculate_amount()
+
+    for category_name, data in iter(sorted(totals.iteritems())):
+        total = data['amount']
+        category = data['category']
+
+        # Skip categories with 0
+        if total == 0:
+            continue
+
+        category_cell = Cell(output_sheet, row, column)
+        total_cell = Cell(output_sheet, row, column + 1)
+        reimbursable_cell = Cell(output_sheet, row, column + 2)
+
+        category_cell.value = category.description()
+        total_cell.value = locale.currency(total)
+        reimbursable_cell.value = reimbursable.name
+
+        grand_total += total
+        row += 1
+
+    Cell(output_sheet, row, column).value = "Total"
+    Cell(output_sheet, row, column).font.bold = True
+    Cell(output_sheet, row, column + 1).value = locale.currency(grand_total)
+    Cell(output_sheet, row, column + 1).font.bold = True
+    Cell(output_sheet, row, column + 2).value = reimbursable.name
+    Cell(output_sheet, row, column + 2).font.bold = True
+
+    return { 'total': grand_total, 'row': row }
 
 with db.transaction():
     for input_sheet in all_sheets():
@@ -189,20 +232,34 @@ except OSError:
 active_wkbk(new_wkbk())
 
 # Now display it all
-for reimbursable in Reimbursable.select():
-    output_sheet = reimbursable.name
-    new_sheet(output_sheet)
+output_sheet = "Totals"
+new_sheet(output_sheet)
 
-    column = 1
+column = 1
 
-    for account in Account.select():
+for account in Account.select():
+    # Build headers
+    Cell(output_sheet, 1, column).value = account.name
+    Cell(output_sheet, 1, column + 1).value = "Charge"
+    Cell(output_sheet, 1, column + 2).value = "Type"
+
+    reimbursables = Reimbursable.select().order_by(Reimbursable.weight.asc())
+    reimbursable_totals = {}
+    row = 2
+
+    for reimbursable in reimbursables:
         transactions = account.transactions.select().where(Transaction.reimbursable == reimbursable)
 
-        output_transactions(output_sheet, account.name, transactions, column)
+        # Output
+        data = account_transactions(output_sheet, transactions, reimbursable, row, column)
 
-        column += 2
+        reimbursable_totals[reimbursable.name] = data['total']
 
-    output_transactions(output_sheet, "Total " + reimbursable.name, reimbursable.transactions, column)
+        # Skip row for next
+        row = data['row'] + 2
+
+    # Leave column gap
+    column += 4
 
     # Format everythang
     header_range = CellRange(output_sheet, "A1:Z1")
